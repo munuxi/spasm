@@ -51,9 +51,10 @@ struct spasm_csr * spasm_rref(const struct spasm_lu *fact, int *Rqinv)
 		int *qinv_local = spasm_malloc(m * sizeof(int));
 		for (int j = 0; j < m; j++)
 			qinv_local[j] = Uqinv[j];
-	
-		#pragma omp for schedule(guided)
-	  	for (int i = 0; i < n; i++) {
+		
+		int i;
+		#pragma omp parallel for schedule(guided)
+	  	for (i = 0; i < n; i++) {
 	  		int pivot = Uj[Up[i]];
 	  		assert(qinv_local[pivot] == i);
 	  		qinv_local[pivot] = -1;
@@ -128,12 +129,13 @@ struct spasm_csr * spasm_rref(const struct spasm_lu *fact, int *Rqinv)
 		free(xj);
 		free(qinv_local);
 
-		#pragma omp for
-		for (int j = 0; j < m; j++)
+		int j;
+		#pragma omp parallel for
+		for (j = 0; j < m; j++)
 			Rqinv[j] = -1;
 
-		#pragma omp for
-		for (int i = 0; i < n; i++) {
+		#pragma omp parallel for
+		for (i = 0; i < n; i++) {
 			int px = Rp[i];
 			int j = Rj[px];
 			Rqinv[j] = i;

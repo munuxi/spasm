@@ -4,6 +4,8 @@
 #include <math.h>
 
 #include "spasm.h"
+#include "flint/nmod.h"
+#include "flint/nmod_mat.h"
 
 /* provide sensible defaults */
 void spasm_echelonize_init_opts(struct echelonize_opts *opts)
@@ -27,6 +29,18 @@ void spasm_echelonize_init_opts(struct echelonize_opts *opts)
 	opts->low_rank_start_weight = -1;
 }
 
+// void set_nmod_mat(nmod_mat_t A, const ulong *S){
+// 	for (int i = 0; i < A->r; i++) 
+// 		for (int j = 0; j < A->c; j++) 
+// 			nmod_mat_entry(A, i, j) = S[i * (A->c) + j];
+// }
+
+// void read_nmod_mat(ulong *S, const nmod_mat_t A){
+// 	for (int i = 0; i < A->r; i++) 
+// 		for (int j = 0; j < A->c; j++) 
+// 			S[i * (A->c) + j] = nmod_mat_entry(A, i, j);
+// }
+
 bool spasm_echelonize_test_completion(const struct spasm_csr *A, const int *p, int n, struct spasm_csr *U, int *Uqinv)
 {
 	/* deal with the easy cases first */
@@ -34,16 +48,21 @@ bool spasm_echelonize_test_completion(const struct spasm_csr *A, const int *p, i
 		return 1;
 	int m = A->m;
 	i64 Sm = m - U->n;
-	i64 prime = spasm_get_prime(A);
-	spasm_datatype datatype = spasm_datatype_choose(prime);
-	i64 Sn = ceil(128 / log2(prime));
-	void *S = spasm_malloc(Sn * Sm * spasm_datatype_size(datatype));
+	ulong prime = spasm_get_prime(A);
+	// spasm_datatype datatype = spasm_datatype_choose(prime);
+	i64 Sn = (i64)ceil(128 / log2(prime));
+	ulong *S = spasm_malloc(Sn * Sm * sizeof(*S));
 	int *q = spasm_malloc(Sm * sizeof(*q));
-	size_t *Sp = spasm_malloc(Sm * sizeof(*Sp));       /* for FFPACK */
+	slong *Sp = spasm_malloc(Sm * sizeof(*Sp));       /* for FFPACK */
 	fprintf(stderr, "[echelonize/completion] Testing completion with %" PRId64" random linear combinations (rank %d)\n", Sn, U->n);
 	fflush(stderr);
-	spasm_schur_dense_randomized(A, p, n, U, Uqinv, S, datatype, q, Sn, 0);
-	int rr = spasm_ffpack_rref(prime, Sn, Sm, S, Sm, datatype, Sp);
+	nmod_mat_t mat;
+	nmod_mat_init(mat, Sn, Sm, prime);
+	spasm_schur_dense_randomized(A, p, n, U, Uqinv, mat->entries, q, Sn, 0);
+	// set_nmod_mat(mat, S);
+	int rr = spasm_flint_rref(mat, S, Sp);
+	// read_nmod_mat(S, mat);
+	nmod_mat_clear(mat);
 	free(S);
 	free(Sp);
 	free(q);
@@ -189,8 +208,8 @@ static void echelonize_GPLU(const struct spasm_csr *A, const int *p, int n, cons
 /*
  * Transfer echelonized rows from (dense) S to (sparse) U
  */
-static void update_U_after_rref(int rr, int Sm, const void *S, spasm_datatype datatype, 
-	const size_t *Sqinv, const int *q, struct spasm_lu *fact)
+static void update_U_after_rref(int rr, int Sm, const ulong *S, 
+	const slong *Sqinv, const int *q, struct spasm_lu *fact)
 {
 	struct spasm_csr *U = fact->U;
 	int *Uqinv = fact->qinv;
@@ -202,14 +221,14 @@ static void update_U_after_rref(int rr, int Sm, const void *S, spasm_datatype da
 	int *Uj = U->j;
 	spasm_ZZp *Ux = U->x;
 	for (i64 i = 0; i < rr; i++) {
-		int j = Sqinv[i];   /* column (of S) with the pivot on row i of S; the pivot is implicitly 1 */
+		slong j = Sqinv[i];   /* column (of S) with the pivot on row i of S; the pivot is implicitly 1 */
 		Uj[unz] = q[j];  /* column of A with the pivot */
 		Ux[unz] = 1;
 		unz += 1;
 		Uqinv[q[j]] = U->n;
 		for (i64 k = rr; k < Sm; k++) {
-			i64 j = Sqinv[k];
-			spasm_ZZp x = spasm_datatype_read(S, i * Sm + k, datatype);
+			slong j = Sqinv[k];
+			spasm_ZZp x = S[i * Sm + k];
 			if (x == 0)
 				continue;   /* don't store zero */
 			Uj[unz] = q[j];
@@ -225,92 +244,92 @@ static void update_U_after_rref(int rr, int Sm, const void *S, spasm_datatype da
 /*
  * Transfer dense LU factorization to fact
  */
-static void update_fact_after_LU(int n, int Sm, int r, const void *S, spasm_datatype datatype, 
-	const size_t *Sp, const size_t *Sqinv, const int *q, const int *p_in, i64 lnz_before, 
-	bool complete, bool *pivotal, struct spasm_lu *fact)
-{
-	struct spasm_csr *U = fact->U;
-	struct spasm_triplet *L = fact->Ltmp;
-	int *Uqinv = fact->qinv;
-	int *Lp = fact->p;
-	i64 extra_unz = ((i64) (1 + 2*Sm - r)) * r;     /* maximum size increase */
-	i64 extra_lnz = ((i64) (2*n - r + 1)) * r / 2;
-	i64 unz = spasm_nnz(U);
-	i64 lnz = L->nz;
-	spasm_csr_realloc(U, unz + extra_unz);
-	spasm_triplet_realloc(L, lnz + extra_lnz);
-	i64 *Up = U->p;
-	int *Uj = U->j;
-	spasm_ZZp *Ux = U->x;
-	int *Li = L->i;
-	int *Lj = L->j;
-	spasm_ZZp *Lx = L->x;
+// static void update_fact_after_LU(int n, int Sm, int r, const void *S, spasm_datatype datatype, 
+// 	const size_t *Sp, const size_t *Sqinv, const int *q, const int *p_in, i64 lnz_before, 
+// 	bool complete, bool *pivotal, struct spasm_lu *fact)
+// {
+// 	struct spasm_csr *U = fact->U;
+// 	struct spasm_triplet *L = fact->Ltmp;
+// 	int *Uqinv = fact->qinv;
+// 	int *Lp = fact->p;
+// 	i64 extra_unz = ((i64) (1 + 2*Sm - r)) * r;     /* maximum size increase */
+// 	i64 extra_lnz = ((i64) (2*n - r + 1)) * r / 2;
+// 	i64 unz = spasm_nnz(U);
+// 	i64 lnz = L->nz;
+// 	spasm_csr_realloc(U, unz + extra_unz);
+// 	spasm_triplet_realloc(L, lnz + extra_lnz);
+// 	i64 *Up = U->p;
+// 	int *Uj = U->j;
+// 	spasm_ZZp *Ux = U->x;
+// 	int *Li = L->i;
+// 	int *Lj = L->j;
+// 	spasm_ZZp *Lx = L->x;
 	
-	/* build L */
-	if (!complete) {
-		for (i64 i = 0; i < r; i++) {   /* mark pivotal rows */
-			int pi = Sp[i];
-			int iorig = (p_in != NULL) ? p_in[pi] : pi;
-			pivotal[iorig] = 1;
-		}
+// 	/* build L */
+// 	if (!complete) {
+// 		for (i64 i = 0; i < r; i++) {   /* mark pivotal rows */
+// 			int pi = Sp[i];
+// 			int iorig = (p_in != NULL) ? p_in[pi] : pi;
+// 			pivotal[iorig] = 1;
+// 		}
 
-		/* stack L (ignore non-pivotal rows) */
-		lnz = lnz_before;
-		for (i64 px = lnz_before; px < L->nz; px++) {
-			int i = Li[px];
-			if (!pivotal[i])
-				continue;
-			int j = Lj[px];
-			spasm_ZZp x = Lx[px];
-			Li[lnz] = i;
-			Lj[lnz] = j;
-			Lx[lnz] = x;
-			lnz += 1;
-		}
-		fprintf(stderr, "L : %" PRId64 " --> %" PRId64 " --> %" PRId64 " ---> ", lnz_before, L->nz, lnz);
-	}
+// 		/* stack L (ignore non-pivotal rows) */
+// 		lnz = lnz_before;
+// 		for (i64 px = lnz_before; px < L->nz; px++) {
+// 			int i = Li[px];
+// 			if (!pivotal[i])
+// 				continue;
+// 			int j = Lj[px];
+// 			spasm_ZZp x = Lx[px];
+// 			Li[lnz] = i;
+// 			Lj[lnz] = j;
+// 			Lx[lnz] = x;
+// 			lnz += 1;
+// 		}
+// 		fprintf(stderr, "L : %" PRId64 " --> %" PRId64 " --> %" PRId64 " ---> ", lnz_before, L->nz, lnz);
+// 	}
 
-	/* add new entries from S */
-	for (i64 i = 0; i < (complete ? n : r); i++) {
-		int pi = Sp[i];
-		int iorig = (p_in != NULL) ? p_in[pi] : pi;
-		for (i64 j = 0; j < spasm_min(i + 1, r); j++) {
-			spasm_ZZp Mij = spasm_datatype_read(S, i  * Sm + j, datatype);
-			if (Mij == 0)
-				continue;
-			Li[lnz] = iorig;
-			Lj[lnz] = U->n + j;
-			Lx[lnz] = Mij;
-			lnz += 1;
-		}
-		if (i < r)   /* register pivot */
-			Lp[U->n + i] = iorig;
-	}
-	L->nz = lnz;
-	fprintf(stderr, "%" PRId64 "\n", lnz);
+// 	/* add new entries from S */
+// 	for (i64 i = 0; i < (complete ? n : r); i++) {
+// 		int pi = Sp[i];
+// 		int iorig = (p_in != NULL) ? p_in[pi] : pi;
+// 		for (i64 j = 0; j < spasm_min(i + 1, r); j++) {
+// 			spasm_ZZp Mij = spasm_datatype_read(S, i  * Sm + j, datatype);
+// 			if (Mij == 0)
+// 				continue;
+// 			Li[lnz] = iorig;
+// 			Lj[lnz] = U->n + j;
+// 			Lx[lnz] = Mij;
+// 			lnz += 1;
+// 		}
+// 		if (i < r)   /* register pivot */
+// 			Lp[U->n + i] = iorig;
+// 	}
+// 	L->nz = lnz;
+// 	fprintf(stderr, "%" PRId64 "\n", lnz);
 
-	/* fill U */
-	for (i64 i = 0; i < r; i++) {
-		/* implicit 1 in U */
-		int j = Sqinv[i];
-		int jorig = q[j];
-		Uj[unz] = jorig;
-		Ux[unz] = 1;
-		unz += 1;
-		/* register pivot */
-		Uqinv[jorig] = U->n;
-		for (i64 j = i+1; j < Sm; j++) {
-			int jnew = Sqinv[j];
-			int jorig = q[jnew];
-			spasm_ZZp x = spasm_datatype_read(S, i * Sm + j, datatype);
-			Uj[unz] = jorig;
-			Ux[unz] = x;
-			unz += 1;
-		}
-		U->n += 1;
-		Up[U->n] = unz;
-	}
-}
+// 	/* fill U */
+// 	for (i64 i = 0; i < r; i++) {
+// 		/* implicit 1 in U */
+// 		int j = Sqinv[i];
+// 		int jorig = q[j];
+// 		Uj[unz] = jorig;
+// 		Ux[unz] = 1;
+// 		unz += 1;
+// 		/* register pivot */
+// 		Uqinv[jorig] = U->n;
+// 		for (i64 j = i+1; j < Sm; j++) {
+// 			int jnew = Sqinv[j];
+// 			int jorig = q[jnew];
+// 			spasm_ZZp x = spasm_datatype_read(S, i * Sm + j, datatype);
+// 			Uj[unz] = jorig;
+// 			Ux[unz] = x;
+// 			unz += 1;
+// 		}
+// 		U->n += 1;
+// 		Up[U->n] = unz;
+// 	}
+// }
 
 static void echelonize_dense_lowrank(const struct spasm_csr *A, const int *p, int n, struct spasm_lu *fact, struct echelonize_opts *opts)
 {
@@ -320,17 +339,16 @@ static void echelonize_dense_lowrank(const struct spasm_csr *A, const int *p, in
 	int m = A->m;
 	int Sm = m - U->n;
 	i64 prime = spasm_get_prime(A);
-	spasm_datatype datatype = spasm_datatype_choose(prime);
 
-	i64 size_S = (i64) opts->dense_block_size * (i64) Sm * spasm_datatype_size(datatype);
-	void *S = spasm_malloc(size_S);
+	nmod_mat_t mat;
+	ulong *S = spasm_malloc(Sm * opts->dense_block_size * sizeof(*S));
 	int *q = spasm_malloc(Sm * sizeof(*q));
-	size_t *Sp = spasm_malloc(Sm * sizeof(*Sp));       /* for FFPACK */
+	slong *Sp = spasm_malloc(Sm * sizeof(*Sp));       /* for FFPACK */
 	double start = spasm_wtime();
 	int old_un = U->n;
 	int round = 0;
 	fprintf(stderr, "[echelonize/dense/low-rank] processing dense schur complement of dimension %d x %d; block size=%d, type %s\n", 
-		n, Sm, opts->dense_block_size, spasm_datatype_name(datatype));
+		n, Sm, opts->dense_block_size, "ulong");
 	
 	/* 
 	 * stupid algorithm to decide a starting weight:
@@ -342,7 +360,12 @@ static void echelonize_dense_lowrank(const struct spasm_csr *A, const int *p, in
 	 * - this is approximately w >= log 0.01 * n / rank_ub
 	 */
 	int rank_ub = spasm_min(n, Sm);
-	int w = (opts->low_rank_start_weight < 0) ? ceil(-log(0.01) * n / rank_ub) : opts->low_rank_start_weight;
+
+	// w is not enough in some cases, so we set w = 0
+	// the defaule of dense_block_size is 1000, and Sm is not so large,
+	// so we use full linear combinations
+	// int w = (opts->low_rank_start_weight < 0) ? ceil(-log(0.01) * n / rank_ub) : opts->low_rank_start_weight;
+	int w = 0;
 
 	for (;;) {
 		/* compute a chunk of the schur complement, then echelonize with FFPACK */
@@ -351,9 +374,12 @@ static void echelonize_dense_lowrank(const struct spasm_csr *A, const int *p, in
 			break;		
 		fprintf(stderr, "[echelonize/dense/low-rank] Round %d. Weight %d. Processing chunk (%d x %d), |U| = %"PRId64"\n", 
 			round, w, Sn, Sm, spasm_nnz(U));
-		spasm_schur_dense_randomized(A, p, n, U, Uqinv, S, datatype, q, Sn, w);
-		int rr = spasm_ffpack_rref(prime, Sn, Sm, S, Sm, datatype, Sp);
-
+		nmod_mat_init(mat, Sn, Sm, prime);
+		spasm_schur_dense_randomized(A, p, n, U, Uqinv, mat->entries, q, Sn, w);
+		// ulong *S = spasm_malloc(Sn * Sm * sizeof(*S));
+		int rr = spasm_flint_rref(mat, S, Sp);
+		// read_nmod_mat(S, mat);
+		
 		if (rr == 0) {
 			if (spasm_echelonize_test_completion(A, p, n, U, Uqinv))
 				break;
@@ -365,7 +391,8 @@ static void echelonize_dense_lowrank(const struct spasm_csr *A, const int *p, in
 			w *= 2;
 			fprintf(stderr, "[echelonize/dense/low-rank] Not enough pivots, increasing weight to %d\n", w);
 		}
-		update_U_after_rref(rr, Sm, S, datatype, Sp, q, fact);
+		update_U_after_rref(rr, Sm, S, Sp, q, fact);
+		nmod_mat_clear(mat);
 		n -= rr;
 		Sm -= rr;
 		rank_ub -= rr;
@@ -388,14 +415,13 @@ static void echelonize_dense(const struct spasm_csr *A, const int *p, int n, con
 	struct spasm_csr *U = fact->U;
 	int m = A->m;
 	int Sm = m - U->n;
-	i64 prime = spasm_get_prime(A);
-	spasm_datatype datatype = spasm_datatype_choose(prime);
+	ulong prime = spasm_get_prime(A);
 
-	void *S = spasm_malloc((i64) opts->dense_block_size * Sm * spasm_datatype_size(datatype));
+	ulong *S = spasm_malloc(opts->dense_block_size * Sm * sizeof(*S));
 	int *p_out = spasm_malloc(opts->dense_block_size * sizeof(*p_out));
 	int *q = spasm_malloc(Sm * sizeof(*q));
-	size_t *Sqinv = spasm_malloc(Sm * sizeof(*Sqinv));                   /* for FFPACK */
-	size_t *Sp = spasm_malloc(opts->dense_block_size * sizeof(*Sp));     /* for FFPACK / LU only */
+	slong *Sqinv = spasm_malloc(Sm * sizeof(*Sqinv));                   /* for FFPACK */
+	// size_t *Sp = spasm_malloc(opts->dense_block_size * sizeof(*Sp));     /* for FFPACK / LU only */
 	bool *pivotal = spasm_malloc(A->n * sizeof(*pivotal));
 	for (int i = 0; i < A->n; i++)
 		pivotal[i] = 0;
@@ -405,7 +431,7 @@ static void echelonize_dense(const struct spasm_csr *A, const int *p, int n, con
 	int old_un = U->n;
 	int round = 0;
 	fprintf(stderr, "[echelonize/dense] processing dense schur complement of dimension %d x %d; block size=%d, type %s\n", 
-		n, Sm, opts->dense_block_size, spasm_datatype_name(datatype));
+		n, Sm, opts->dense_block_size, "ulong");
 	bool lowrank_mode = 0;
 	int rank_ub = spasm_min(A->n - U->n, A->m - U->n);
 
@@ -417,17 +443,23 @@ static void echelonize_dense(const struct spasm_csr *A, const int *p, int n, con
 		
 		fprintf(stderr, "[echelonize/dense] Round %d. processing S[%d:%d] (%d x %d)\n", round, processed, processed + Sn, Sn, Sm);	
 
-		i64 lnz_before = (opts->L) ? fact->Ltmp->nz : -1;
-		spasm_schur_dense(A, p, Sn, p_in, fact, S, datatype, q, p_out);
+		// i64 lnz_before = (opts->L) ? fact->Ltmp->nz : -1;
+		nmod_mat_t mat;
+		nmod_mat_init(mat, Sn, Sm, prime);
 
+		spasm_schur_dense(A, p, Sn, p_in, fact, mat->entries, q, p_out);
+
+		// set_nmod_mat(mat, S);
 		int rr;
-		if (opts->L) {
-			rr = spasm_ffpack_LU(prime, Sn, Sm, S, Sm, datatype, Sp, Sqinv);
-			update_fact_after_LU(Sn, Sm, rr, S, datatype, Sp, Sqinv, q, p_out, lnz_before, opts->complete, pivotal, fact);
-		} else {
-			rr = spasm_ffpack_rref(prime, Sn, Sm, S, Sm, datatype, Sqinv);
-			update_U_after_rref(rr, Sm, S, datatype, Sqinv, q, fact);
-		}
+		// if (opts->L) {
+		// 	rr = spasm_ffpack_LU(prime, Sn, Sm, S, Sm, datatype, Sp, Sqinv);
+		// 	update_fact_after_LU(Sn, Sm, rr, S, datatype, Sp, Sqinv, q, p_out, lnz_before, opts->complete, pivotal, fact);
+		// } else {
+			rr = spasm_flint_rref(mat, S, Sqinv);
+			update_U_after_rref(rr, Sm, S, Sqinv, q, fact);
+		// }
+		// read_nmod_mat(S, mat);
+		nmod_mat_clear(mat);
 
 		// TODO: test completion and allow early abort
 
@@ -451,7 +483,7 @@ static void echelonize_dense(const struct spasm_csr *A, const int *p, int n, con
 	free(S);
 	free(q);
 	free(Sqinv);
-	free(Sp);
+	// free(Sp);
 	free(p_out);
 	free(pivotal);
 	if (rank_ub > 0 && n - processed > 0 && lowrank_mode) {

@@ -1,8 +1,9 @@
-add_compile_options(-Werror)
+# add_compile_options(-Werror)
 
 add_library(spasm SHARED
 	# crypto stuff
-	spasm_prng.c sha256.c
+	# spasm_prng.c 
+	sha256.c
 
 	# arithmetic
 	spasm_ZZp.c
@@ -16,17 +17,19 @@ add_library(spasm SHARED
 	spasm_reach.c spasm_triangular.c 
 	
 	# echelonization
-	spasm_pivots.c spasm_schur.c spasm_ffpack.cpp 
+	spasm_pivots.c spasm_schur.c spasm_flint.c
 	spasm_echelonize.c 
 
 	# main functionnalities
-	spasm_solve.c spasm_kernel.c spasm_rref.c spasm_certificate.c
+	spasm_solve.c spasm_kernel.c spasm_rref.c 
+	# spasm_certificate.c
 	
 	# dulmage-mendelson
 	spasm_submatrix.c spasm_matching.c spasm_dm.c spasm_scc.c 
 )
 
+# target_link_libraries(spasm PUBLIC ws2_32)
+# target_link_libraries(spasm PUBLIC m)
 target_link_libraries(spasm PUBLIC OpenMP::OpenMP_C)
-target_link_libraries(spasm PUBLIC m)
-target_link_libraries(spasm PUBLIC PkgConfig::GIVARO)
-target_link_libraries(spasm PUBLIC PkgConfig::FFLAS_FFPACK)
+# target_link_libraries(spasm PUBLIC PkgConfig::GIVARO)
+target_link_libraries(spasm PUBLIC PkgConfig::FLINT)

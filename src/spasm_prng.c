@@ -1,4 +1,5 @@
-#include <arpa/inet.h>           // htonl
+// #include <arpa/inet.h>           // htonl
+#include <winsock2.h>               // htonl
 
 #include "spasm.h"
 

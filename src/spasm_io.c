@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
-#include <err.h>
+#include <errno.h>
 #include <string.h>
 #include <ctype.h>
 
@@ -133,7 +133,7 @@ struct spasm_triplet *spasm_triplet_load(FILE * f, i64 prime, u8 *hash)
 			end = 1;
 		}
 		if (!end) {
-			spasm_add_entry(T, i - 1, j - 1, x);
+			spasm_add_entry(T, i - 1, j - 1, spasm_ZZp_init(T->field,x));
 			entries += 1;
 		}
 		if (mm && entries == nnz)
@@ -173,7 +173,7 @@ void spasm_csr_save(const struct spasm_csr *A, FILE *f)
 	fprintf(f, "%d %d M\n", n, m);
 	for (int i = 0; i < n; i++)
 		for (i64 px = Ap[i]; px < Ap[i + 1]; px++) {
-			i64 x = (Ax != NULL) ? Ax[px] : 1;
+			slong x = (Ax != NULL) ? spasm_ZZp_signedrep(A->field,Ax[px]) : 1;
 			fprintf(f, "%d %d %" PRId64 "\n", i + 1, Aj[px] + 1, x);
 		}
 	fprintf(f, "0 0 0\n");
@@ -191,7 +191,7 @@ void spasm_triplet_save(const struct spasm_triplet *A, FILE *f)
 	i64 nz = A->nz;
 	fprintf(f, "%d %d M\n", A->n, A->m);
 	for (i64 px = 0; px < nz; px++)
-		fprintf(f, "%d %d %d\n", Ai[px] + 1, Aj[px] + 1, (Ax != NULL) ? Ax[px] : 1);
+		fprintf(f, "%d %d %" PRId64 "\n", Ai[px] + 1, Aj[px] + 1, (Ax != NULL) ? Ax[px] : 1);
 	fprintf(f, "0 0 0\n");
 }
 

@@ -151,7 +151,7 @@ struct spasm_csr *spasm_compress(const struct spasm_triplet * T)
 
 	/* success; free w and return C */
 	char mem[16];
-	int size = sizeof(int) * (n + nz) + sizeof(spasm_ZZp) * ((Cx != NULL) ? nz : 0);
+	ulong size = sizeof(int) * (n + nz) + sizeof(spasm_ZZp) * ((Cx != NULL) ? nz : 0);
 	spasm_human_format(size, mem);
 	fprintf(stderr, "%" PRId64 " actual NZ, Mem usage = %sbyte [%.2fs]\n", spasm_nnz(C), mem, spasm_wtime() - start);
 	return C;

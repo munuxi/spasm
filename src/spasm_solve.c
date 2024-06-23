@@ -51,7 +51,7 @@ bool spasm_solve(const struct spasm_lu *fact, const spasm_ZZp *b, spasm_ZZp *x)
  */
 struct spasm_csr * spasm_gesv(const struct spasm_lu *fact, const struct spasm_csr *B, bool *ok)
 {
-	i64 prime = B->field->p;
+	ulong prime = B->field->p;
 	assert(prime == fact->L->field->p);
 	assert(fact->L != NULL);
 	int n = B->n;
@@ -66,8 +66,9 @@ struct spasm_csr * spasm_gesv(const struct spasm_lu *fact, const struct spasm_cs
 	{
 		spasm_ZZp *b = spasm_malloc(m * sizeof(*b));
 		spasm_ZZp *x = spasm_malloc(Xm * sizeof(*x));
-		#pragma omp for schedule(dynamic)
-		for (int i = 0; i < n; i++) {
+		int i;
+		#pragma omp parallel for schedule(dynamic)
+		for (i = 0; i < n; i++) {
 			for (int j = 0; j < m; j++) 
 				b[j] = 0;
 			spasm_scatter(B, i, 1, b);

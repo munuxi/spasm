@@ -170,8 +170,9 @@ static int spasm_find_cycle_free_pivots(const struct spasm_csr *A, int *pinv, in
 		for(int j = 0; j < m; j++)
 			w[j] = 0;
 
-		#pragma omp for schedule(dynamic, 1000)
-		for (int i = 0; i < n; i++) {
+		int i;
+		#pragma omp parallel for schedule(dynamic, 1000)
+		for (i = 0; i < n; i++) {
 			/*
 			 * for each non-pivotal row, computes the columns reachable from its entries by alternating paths.
 			 * Unreachable entries on the row can be chosen as pivots. 

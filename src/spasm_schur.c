@@ -1,8 +1,10 @@
 #include <stdlib.h>
 #include <assert.h>
-#include <err.h>
+#include <errno.h>
 
 #include "spasm.h"
+#include "flint/flint.h"
+#include "flint/ulong_extras.h"
 
 /*
  * Samples R rows at random in the schur complement of (P*A)[0:n] w.r.t. U, and return the average density.
@@ -24,9 +26,10 @@ double spasm_schur_estimate_density(const struct spasm_csr *A, const int *p, int
 		int *xj = spasm_malloc(3 * m * sizeof(*xj));
 		for (int j = 0; j < 3 * m; j++)
 			xj[j] = 0;
-
-		#pragma omp for reduction(+:nnz) schedule(dynamic)
-		for (int i = 0; i < R; i++) {
+		
+		int i;
+		#pragma omp parallel for reduction(+:nnz) schedule(dynamic)
+		for (i = 0; i < R; i++) {
 			/* pick a random non-pivotal row in A */
 			int inew = p[rand() % n];
 			int top = spasm_sparse_triangular_solve(U, A, inew, xj, x, qinv);
@@ -92,8 +95,9 @@ struct spasm_csr *spasm_schur(const struct spasm_csr *A, const int *p, int n, co
 			xj[j] = 0;
 		int tid = spasm_get_thread_num();
 
-		#pragma omp for schedule(dynamic, verbose_step)
-		for (int i = 0; i < n; i++) {
+		int i;
+		#pragma omp parallel for schedule(dynamic, verbose_step)
+		for (i = 0; i < n; i++) {
 			int inew = p[i];
 			int top = spasm_sparse_triangular_solve(fact->U, A, inew, xj, x, qinv);
 
@@ -202,44 +206,17 @@ static void prepare_q(int m, const int *qinv, int *q)
 		}
 }
 
-static void gather(int n, const int *xj, const spasm_ZZp *x, void *A, spasm_datatype datatype)
+static void gather(int n, const int *xj, const spasm_ZZp *x, ulong *A)
 {
-	double *Ad;
-	float *Af;
-	i64 *Ai;
-	switch (datatype) {	
-	case SPASM_DOUBLE:
-		Ad = A;
-		for (int k = 0; k < n; k++) {
-			int j = xj[k];
-			Ad[k] = x[j];
-		}
-		break;
-	case SPASM_FLOAT:
-		Af = A;
-		for (int k = 0; k < n; k++) {
-			int j = xj[k];
-			Af[k] = x[j];
-		}
-		break;
-	case SPASM_I64:
-		Ai = A;
-		for (int k = 0; k < n; k++) {
-			int j = xj[k];
-			Ai[k] = x[j];
-		}
-		break;
+	for (int k = 0; k < n; k++) {
+		int j = xj[k];
+		A[k] = x[j];
 	}
 }
 
-static void * row_pointer(void *A, i64 ldA, spasm_datatype datatype, i64 i)
+static ulong * row_pointer(ulong *A, i64 ldA, i64 i)
 {
-	switch (datatype) {	
-	case SPASM_DOUBLE: return (double *) A + i*ldA;
-	case SPASM_FLOAT: return (float *) A + i*ldA;
-	case SPASM_I64: return (i64 *) A + i*ldA;
-	}	
-	assert(false);
+	return A + i*ldA;
 }
 
 /*
@@ -255,7 +232,7 @@ static void * row_pointer(void *A, i64 ldA, spasm_datatype datatype, i64 i)
  * TODO: detect empty rows ; push them to the end.
  */
 void spasm_schur_dense(const struct spasm_csr *A, const int *p, int n, const int *p_in, 
-	struct spasm_lu *fact, void *S, spasm_datatype datatype,int *q, int *p_out)
+	struct spasm_lu *fact, ulong *S,int *q, int *p_out)
 {
 	assert(p != NULL);
 	const struct spasm_csr *U = fact->U;
@@ -287,8 +264,9 @@ void spasm_schur_dense(const struct spasm_csr *A, const int *p, int n, const int
 			xj[j] = 0;
 		int tid = spasm_get_thread_num();
 
-		#pragma omp for schedule(dynamic, verbose_step)
-		for (int k = 0; k < n; k++) {
+		int k;
+		#pragma omp parallel for schedule(dynamic, verbose_step)
+		for (k = 0; k < n; k++) {
 			int i = p[k];          /* corresponding row of A */
 			int iorig = (p_in != NULL) ? p_in[i] : i;
 			p_out[k] = iorig;
@@ -299,8 +277,8 @@ void spasm_schur_dense(const struct spasm_csr *A, const int *p, int n, const int
 			int top = spasm_sparse_triangular_solve(U, A, i, xj, x, qinv);
 
 			/* gather x into S[k] */
-			void *Sk = row_pointer(S, Sm, datatype, k);
-			gather(Sm, q, x, Sk, datatype);
+			ulong *Sk = row_pointer(S, Sm, k);
+			gather(Sm, q, x, Sk);
 			
 			/* fill eliminations coeffs in L */
 			if (L != NULL)
@@ -344,13 +322,13 @@ void spasm_schur_dense(const struct spasm_csr *A, const int *p, int n, const int
  * on output, q sends columns of S to non-pivotal columns of A
  */
 void spasm_schur_dense_randomized(const struct spasm_csr *A, const int *p, int n, const struct spasm_csr *U, const int *qinv, 
-	void *S, spasm_datatype datatype, int *q, int N, int w)
+	ulong *S, int *q, int N, int w)
 {
 	assert(p != NULL);
 	assert(n > 0);
 	int m = A->m;
 	int Sm = m - U->n;
-	i64 prime = spasm_get_prime(A);
+	ulong prime = spasm_get_prime(A);
 	const i64 *Up = U->p;
 	const int *Uj = U->j;
 	prepare_q(m, qinv, q);
@@ -363,10 +341,14 @@ void spasm_schur_dense_randomized(const struct spasm_csr *A, const int *p, int n
 		/* per-thread scratch space */
 		spasm_ZZp *y = spasm_malloc(m * sizeof(*y));
 
-		#pragma omp for schedule(dynamic, verbose_step)
-		for (i64 k = 0; k < N; k++) {
-			spasm_prng_ctx ctx;
-			spasm_prng_seed_simple(prime, k, 0, &ctx);
+		i64 k;
+		#pragma omp parallel for schedule(dynamic, verbose_step)
+		for (k = 0; k < N; k++) {
+			// spasm_prng_ctx ctx;
+			// spasm_prng_seed_simple(prime, k, 0, &ctx);
+			flint_rand_t ctx;
+			flint_rand_init(ctx);
+			flint_rand_set_seed(ctx, rand(), rand());
 
 			for (int j = 0; j < m; j++)
 				y[j] = 0;
@@ -374,14 +356,16 @@ void spasm_schur_dense_randomized(const struct spasm_csr *A, const int *p, int n
 				/* x <--- random linear combinations of all rows */
 				for (int i = 0; i < n; i++) {
 					int inew = p[i];
-					int coeff = spasm_prng_ZZp(&ctx);
-					spasm_scatter(A, inew, coeff, y);
+					// int coeff = spasm_prng_ZZp(&ctx);
+					ulong coeff = n_randint(ctx, prime);
+					spasm_scatter(A, inew, spasm_ZZp_init(A->field,coeff), y);
 				}
-			} else {
-				for (int i = 0; i < w; i++) {
-					int inew = p[rand() % n];
-					int coeff = (i == 0) ? 1 : spasm_prng_ZZp(&ctx);
-					spasm_scatter(A, inew, coeff, y);
+			} else {// it seems that w is not enough
+				for (int i = 0; i < w; i++) { 
+					int index = rand() % n;
+					int inew = p[index]; 
+					ulong coeff = (i == 0) ? 1 : n_randint(ctx, prime);
+					spasm_scatter(A, inew, spasm_ZZp_init(A->field,coeff), y);
 				}
 			}
 
@@ -390,12 +374,12 @@ void spasm_schur_dense_randomized(const struct spasm_csr *A, const int *p, int n
 				int j = Uj[Up[i]];               // warning: this assumes pivots are first entries on the row
 				if (y[j] == 0)
 					continue;
-				spasm_scatter(U, i, -y[j], y);
+				spasm_scatter(U, i, spasm_ZZp_neg(U->field,y[j]), y);
 			}
 			
 			/* gather x into S[k] */
-			void *Sk = row_pointer(S, Sm, datatype, k);
-			gather(Sm, q, y, Sk, datatype);
+			ulong *Sk = row_pointer(S, Sm, k);
+			gather(Sm, q, y, Sk);
 			// for (int j = 0; j < Sm; j++) {
 			// 	int jj = q[j];
 			// 	spasm_datatype_write(S, k * Sm + j, datatype, x[jj]);
@@ -406,6 +390,7 @@ void spasm_schur_dense_randomized(const struct spasm_csr *A, const int *p, int n
 				fprintf(stderr, "\r[schur/dense/random] %" PRId64 "/%d", k, N);
 				fflush(stderr);
 			}
+			flint_rand_clear(ctx);
 		}
 		free(y);
 	}

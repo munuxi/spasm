@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
-#include <err.h>
+#include <errno.h>
 
 #include "spasm.h"
 

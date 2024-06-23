@@ -48,15 +48,14 @@ Installation
 ------------
 
 In brief:
-```make```
+```mkdir build; cd build; cmake ..; make spasm```
+
+On Windows, use Visual studio to open the folder and build all.
 
 This requires [cmake](https://cmake.org) and [pkg-config](https://www.freedesktop.org/wiki/Software/pkg-config/). The executables can be found in `build/tools`.
 
-SpaSM relies on two third-party libraries, which are required at compile-time:
-  * [Givaro](https://github.com/linbox-team/givaro)
-  * [FFLAS-FFPACK](https://github.com/linbox-team/fflas-ffpack)
-  
-Under Debian linux or ubuntu, installing the `fflas-ffpack` package is sufficient to compile.
+SpaSM relies on one third-party library, which is required at compile-time:
+  * [FLINT](https://flintlib.org/)
 
 SpaSM uses OpenMP to exploit multicore machines.
 

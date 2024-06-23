@@ -47,8 +47,9 @@ struct spasm_csr * spasm_kernel(const struct spasm_lu *fact)
 			xj[j] = 0;
 		int tid = spasm_get_thread_num();
 
-		#pragma omp for schedule(guided)
-	  	for (int j = 0; j < m; j++) {
+		int j;
+		#pragma omp parallel for schedule(guided)
+	  	for (j = 0; j < m; j++) {
 	  		if (qinv[j] >= 0)
 	  			continue;         /* skip pivotal row */
 	  		int top = spasm_sparse_triangular_solve(Ut, Ut, j, xj, x, Utqinv);
@@ -90,7 +91,7 @@ struct spasm_csr * spasm_kernel(const struct spasm_lu *fact)
 
 			/* write the new row in K */
 			Kj[local_nnz] = j;
-			Kx[local_nnz] = -1;
+			Kx[local_nnz] = spasm_ZZp_neg(fact->U->field,1);
 			local_nnz += 1;
 			for (int px = top; px < n; px++) {
 				int jj = xj[px];

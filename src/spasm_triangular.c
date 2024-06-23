@@ -47,7 +47,7 @@ void spasm_dense_back_solve(const struct spasm_csr *L, spasm_ZZp *b, spasm_ZZp *
 		spasm_ZZp alpha = spasm_ZZp_inverse(L->field, diagonal_entry);
 		x[i] = spasm_ZZp_mul(L->field, alpha, b[j]);
 		spasm_ZZp backup = x[i];
-		spasm_scatter(L, i, -x[i], b);
+		spasm_scatter(L, i, spasm_ZZp_neg(L->field,x[i]), b);
 		x[i] = backup;
 	}
 }
@@ -79,7 +79,7 @@ bool spasm_dense_forward_solve(const struct spasm_csr *U, spasm_ZZp *b, spasm_ZZ
 
 		/* eliminate b[j] */
 		x[i] = b[j];
-		spasm_scatter(U, i, -b[j], b);
+		spasm_scatter(U, i, spasm_ZZp_neg(U->field,b[j]), b);
 		assert(b[j] == 0);
 	}
 	for (int j = 0; j < m; j++)   /* check that everything has been eliminated */
@@ -122,7 +122,7 @@ int spasm_sparse_triangular_solve(const struct spasm_csr *U, const struct spasm_
 		int j = xj[px];
 		x[j] = 0;
 	}
-	spasm_scatter(B, k, 1, x);
+	spasm_scatter(B, k, UWORD(1), x);
 	// for (i64 px = Bp[k]; px < Bp[k + 1]; px++) {
 	// 	int j = Bj[px];
 	// 	x[j] = Bx[px];
@@ -139,7 +139,7 @@ int spasm_sparse_triangular_solve(const struct spasm_csr *U, const struct spasm_
 
 		/* the pivot entry on row i is 1, so we just have to multiply by -x[j] */
 		spasm_ZZp backup = x[j];
-		spasm_scatter(U, i, -x[j], x);
+		spasm_scatter(U, i, spasm_ZZp_neg(U->field,x[j]), x);
 		assert(x[j] == 0);
 		x[j] = backup;
 	}

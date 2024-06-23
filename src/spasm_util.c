@@ -1,8 +1,8 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/time.h>
-#include <err.h>
+#include "sys/time.h"
+#include <errno.h>
 #include <inttypes.h>
 
 #include "spasm.h"
